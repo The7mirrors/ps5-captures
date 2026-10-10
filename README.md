@@ -36,7 +36,8 @@ console to any phone or computer on the same network:
 
 ## Install
 
-1. Download **`CapturesPS5.elf`** from the [Releases](../../releases) page.
+1. Download **`CapturesPS5-v1.0.zip`** from the [Releases](../../releases) page and unzip it to get
+   **`CapturesPS5.elf`**.
 2. Send it with your payload loader (Payload Manager, `elfldr`, ...).
    It installs the app to `/data/homebrew/PPSA99233` and stays running as the app's helper.
 3. Open **Captures** from the home screen (if the tile doesn't appear, let ShadowMountPlus rescan or restart the PS5).
