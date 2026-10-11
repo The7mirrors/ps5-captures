@@ -3,3 +3,6 @@ proto/native/build/
 *.o
 *.d
 release/
+deps/prefix/
+deps/src/
+deps/stub/

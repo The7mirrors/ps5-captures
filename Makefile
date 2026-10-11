@@ -12,7 +12,7 @@
 #   3. build/ps5/CapturesPS5.elf         the installer + helper, with the app folder from step 2 inside
 
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
-VERSION ?= 1.1
+VERSION ?= 1.2
 TITLE_ID ?= PPSA99233
 APP_OUT := build/app/$(TITLE_ID)
 
@@ -26,7 +26,7 @@ APP_C_SRC := frontend/third_party/qrcodegen/qrcodegen.c
 # the helper payload, and the installer (= helper + install)
 HELPER_SRC := coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
 	coreorbis/orbis-shims/ProsperoHelper.cpp coreorbis/orbis-shims/ProsperoCrash.cpp \
-	coreorbis/orbis-shims/ProsperoCaptures.cpp
+	coreorbis/orbis-shims/ProsperoCaptures.cpp coreorbis/orbis-shims/ProsperoConvert.cpp
 INSTALLER_SRC := installer/installer_main.cpp $(HELPER_SRC) coreorbis/orbis-shims/ProsperoInstall.cpp
 
 INCS := -Icoreorbis/include-orbis -Icoreorbis/orbis-shims -Ifrontend
@@ -37,7 +37,12 @@ PS5_CC  := $(PS5_PAYLOAD_SDK)/bin/prospero-clang
 PS5_CXX := $(PS5_PAYLOAD_SDK)/bin/prospero-clang++
 PS5_OUT := build/ps5
 PS5_OPT := -O2 -fPIC -march=znver2 -fno-strict-aliasing
-PS5_PAYLOAD_LIBS := -lkernel_sys -lSceNet -lSceNetCtl -lpthread
+# the helper's WebM -> MP4 converter: FFmpeg + x264 for the PS5, built by deps/build-deps.sh into deps/prefix
+FFMPEG ?= $(abspath deps/prefix)
+FFMPEG_LIBS := $(FFMPEG)/lib/libavformat.a $(FFMPEG)/lib/libavcodec.a $(FFMPEG)/lib/libswscale.a \
+	$(FFMPEG)/lib/libswresample.a $(FFMPEG)/lib/libavutil.a $(FFMPEG)/lib/libx264.a
+PS5_PAYLOAD_LIBS := $(FFMPEG_LIBS) -lkernel_sys -lSceNet -lSceNetCtl -lpthread -Wl,--wrap=pthread_create
+%/orbis-shims/ProsperoConvert.o: EXTRA_FLAGS = -I$(FFMPEG)/include
 
 # the UI font (Roboto) and the button glyphs (PromptFont) are built into fe_text.o
 %/frontend/fe_text.o: EXTRA_FLAGS = -DFE_FONT_DIR='"$(abspath frontend/assets/fonts)"' -Wno-error -Wno-sign-compare -Wno-unused-function

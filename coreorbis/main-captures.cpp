@@ -54,6 +54,7 @@ struct Status
 {
 	std::string ip;
 	int port = 0, photos = 0, videos = 0, web = 0;
+	int conv_left = 0, conv_pct = 0; // clips still to make into MP4s, the current one's progress
 	unsigned sent = 0;
 	bool connected = false;
 };
@@ -112,6 +113,9 @@ public:
 			{
 				st.ip = strcmp(ip, "-") == 0 ? "" : ip;
 				st.connected = true;
+				const char* conv = strstr(l.c_str(), " CONV "); // (Captures 1.2's helper)
+				if (!conv || sscanf(conv, " CONV %d %d", &st.conv_left, &st.conv_pct) != 2)
+					st.conv_left = st.conv_pct = 0;
 			}
 		}
 	}
@@ -182,13 +186,15 @@ void Draw(const Status& st, double t)
 		snprintf(counts, sizeof(counts), "%d screenshot%s   %d video%s", st.photos, st.photos == 1 ? "" : "s", st.videos,
 			st.videos == 1 ? "" : "s");
 		fe::DrawText(tx, qy + 300, counts, 4, Rgb(230, 232, 240));
-		char sent[128];
-		if (st.sent)
-			snprintf(sent, sizeof(sent), "%u file%s sent to the phone", st.sent, st.sent == 1 ? "" : "s");
-		else
-			snprintf(sent, sizeof(sent), "Nothing sent yet");
-		fe::DrawText(tx, qy + 360, sent, 3, st.sent ? Rgb(120, 220, 140) : Rgb(150, 155, 180));
-		fe::DrawText(tx, qy + 420, "The gallery only runs while this screen is open.", 2, Rgb(130, 135, 160));
+		// (only while the phone is saving videos: the WebM ones made into MP4s)
+		if (st.conv_left > 0)
+		{
+			char conv[128];
+			snprintf(conv, sizeof(conv), "Making %d video%s into MP4 for the phone... %d%%", st.conv_left,
+				st.conv_left == 1 ? "" : "s", st.conv_pct);
+			fe::DrawText(tx, qy + 360, conv, 3, Rgb(255, 196, 80));
+		}
+		fe::DrawText(tx, qy + 430, "The gallery only runs while this screen is open.", 2, Rgb(130, 135, 160));
 	}
 	const std::string hint = std::string(fe::icon::Circle) + "  Close";
 	fe::DrawText((kWidth - fe::TextWidth(hint.c_str(), 3)) / 2, kHeight - 80, hint.c_str(), 3, Rgb(170, 175, 200));
@@ -241,7 +247,8 @@ int Run()
 			break;
 		const double now = Now();
 		const bool changed = st.connected != shown.connected || st.ip != shown.ip || st.photos != shown.photos ||
-			st.videos != shown.videos || st.sent != shown.sent || st.web != shown.web;
+			st.videos != shown.videos || st.sent != shown.sent || st.web != shown.web || st.conv_left != shown.conv_left ||
+			st.conv_pct != shown.conv_pct;
 		if (changed || now - last_draw > (st.connected ? 5.0 : 0.5))
 		{
 			Draw(st, now);

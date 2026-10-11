@@ -13,7 +13,7 @@
 namespace captures
 {
 constexpr uint16_t kWebPort = 8090;
-constexpr uint16_t kControlPort = 9093;
+constexpr uint16_t kControlPort = 9095; // (1.0-1.1: 9093)
 
 // The helper side: a thread serving kControlPort (and kWebPort while the app is connected). Returns at once.
 void StartServer();

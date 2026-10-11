@@ -4,6 +4,7 @@
 //   GET  /api/list     {"games":{"PPSA..":"name"},"items":[{"id":"photo/PPSA../0f4/x.jpg","t":"p","g":"PPSA..","s":size,"m":mtime}]}
 //   GET  /t/<id>       its thumbnail (the console's own, under /user/av_contents/thumbnails), else the photo itself
 //   GET  /f/<id>       the file, with Range (phones play videos by ranges); ?dl=1 makes it a download
+//   POST /api/prep     <id>\n<id>... -> the WebM videos among them queued to be made into MP4s, how each stands
 //   POST /zip          ids=<id>%0A<id>... -> one .zip of them, stored (no compression; files under 4 GB in all)
 //
 // An id is always "photo|video/<title id>/<folder>/<file>": letters, digits, '_', '-', '.', no "..": nothing outside
@@ -14,6 +15,7 @@
 #include "ProsperoCaptures.h"
 
 #include "OrbisPaths.h"
+#include "ProsperoConvert.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -46,8 +48,15 @@ const char kPage[] =
 	;
 
 std::atomic<int> g_listen{-1};      // the web server's socket while the app is connected
-std::atomic<unsigned> g_sent{0};    // files sent since the app opened
+std::atomic<unsigned> g_sent{0};    // files saved by the phone since the app opened (downloads, ZIP entries)
 std::atomic<int> g_photos{0}, g_videos{0};
+// the converter (Captures 1.2): WebM clips made into MP4s while the app is open
+std::atomic<bool> g_conv_stop{true}; // true while the app is closed (and stops a conversion under way)
+std::atomic<int> g_conv_left{0}, g_conv_pct{0};
+// the clips the phone asked for (POST /api/prep: it is saving them), first asked first made
+std::mutex g_conv_lock;
+std::vector<std::string> g_conv_queue;
+std::string g_conv_cur; // the one being made (under g_conv_lock)
 
 struct Item
 {
@@ -91,6 +100,16 @@ std::string Mp4Path(const std::string& id)
 	struct stat st;
 	return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode) ? p : "";
 }
+
+// what is sent for an id: its MP4 if one was made of it (WebM), else the file itself
+std::string SendPath(const std::string& id)
+{
+	const std::string mp4 = Mp4Path(id);
+	return mp4.empty() ? FilePath(id) : mp4;
+}
+
+std::string Mp4Target(const std::string& id);
+bool Exists(const std::string& p);
 
 std::string ThumbPath(const std::string& id)
 {
@@ -352,6 +371,15 @@ std::string NiceName(const std::string& id)
 	return name;
 }
 
+// its download name, ".mp4" when its MP4 is what is sent
+std::string SendName(const std::string& id)
+{
+	std::string nice = NiceName(id);
+	if (!Mp4Path(id).empty() && nice.size() > 5)
+		nice = nice.substr(0, nice.size() - 5) + ".mp4";
+	return nice;
+}
+
 void SendFile(int s, const std::string& path, const std::string& range, bool download, const std::string& nice)
 {
 	const int fd = open(path.c_str(), O_RDONLY);
@@ -410,7 +438,7 @@ void SendFile(int s, const std::string& path, const std::string& range, bool dow
 			left -= r;
 			at += r;
 		}
-		if (left == 0 && !partial)
+		if (left == 0 && !partial && download) // (only what the phone saved: not thumbnails, icons, nor what it shows)
 			g_sent++;
 	}
 	close(fd);
@@ -448,7 +476,7 @@ void SendZip(int s, const std::vector<std::string>& ids)
 	for (const std::string& id : ids)
 	{
 		struct stat st;
-		if (!SafeId(id) || stat(FilePath(id).c_str(), &st) != 0)
+		if (!SafeId(id) || stat(SendPath(id).c_str(), &st) != 0)
 			continue;
 		files.push_back({id, st.st_size});
 		total += st.st_size;
@@ -478,7 +506,7 @@ void SendZip(int s, const std::vector<std::string>& ids)
 	std::map<std::string, int> used;
 	for (const auto& f : files)
 	{
-		std::string name = NiceName(f.first);
+		std::string name = SendName(f.first);
 		if (used[name]++) // the same name twice: number it
 			name.insert(name.find_last_of('.'), " (" + std::to_string(used[name]) + ")");
 		std::string local;
@@ -495,7 +523,7 @@ void SendZip(int s, const std::vector<std::string>& ids)
 		local += name;
 		if (!SendAll(s, local.data(), local.size()))
 			return;
-		const int fd = open(FilePath(f.first).c_str(), O_RDONLY);
+		const int fd = open(SendPath(f.first).c_str(), O_RDONLY);
 		uint32_t crc = 0, size = 0;
 		if (fd >= 0)
 		{
@@ -599,7 +627,12 @@ void* Client(void* arg)
 				range.erase(0, 1);
 		}
 		if (method == "GET" && (target == "/" || target == "/index.html"))
+		{
+			const size_t ua = req.find("\nUser-Agent:");
+			if (ua != std::string::npos && ua < body_at)
+				OrbisLog("[captures] gallery opened by: %s", req.substr(ua + 12, std::min<size_t>(req.find('\r', ua) - ua - 12, 200)).c_str());
 			SendText(s, 200, "text/html; charset=utf-8", kPage);
+		}
 		else if (method == "GET" && target == "/api/list")
 		{
 			const std::vector<Item> items = Scan();
@@ -637,12 +670,7 @@ void* Client(void* arg)
 			}
 			else
 			{
-				// its MP4 if one was made of it (WebM), else the file itself
-				const std::string mp4 = Mp4Path(id);
-				std::string nice = NiceName(id);
-				if (!mp4.empty() && nice.size() > 5)
-					nice = nice.substr(0, nice.size() - 5) + ".mp4";
-				SendFile(s, mp4.empty() ? FilePath(id) : mp4, range, query.find("dl=1") != std::string::npos, nice);
+				SendFile(s, SendPath(id), range, query.find("dl=1") != std::string::npos, SendName(id));
 			}
 		}
 		else if (method == "GET" && target.rfind("/icon/", 0) == 0)
@@ -655,6 +683,45 @@ void* Client(void* arg)
 				SendFile(s, "/user/appmeta/" + tid + "/icon0.png", "", false, "");
 			else
 				SendText(s, 404, "text/plain", "no icon");
+		}
+		else if (method == "POST" && target == "/api/prep")
+		{
+			// the phone saving videos (ids, one a line): the WebM ones are queued to be made into MP4s, and how each
+			// stands comes back: {"<id>":"ready"|"failed"|"wait"|<percent>} (the page asks again every second)
+			const std::string body = req.substr(body_at + 4);
+			std::string j = "{";
+			{
+				std::lock_guard<std::mutex> lock(g_conv_lock);
+				size_t a = 0;
+				while (a < body.size())
+				{
+					size_t b = body.find('\n', a);
+					if (b == std::string::npos)
+						b = body.size();
+					std::string id = body.substr(a, b - a);
+					a = b + 1;
+					while (!id.empty() && (id.back() == '\r' || id.back() == ' '))
+						id.pop_back();
+					if (!SafeId(id))
+						continue;
+					std::string state;
+					if (!Ext(id, {".webm"}) || !Mp4Path(id).empty())
+						state = "\"ready\"";
+					else if (Exists(Mp4Target(id) + ".failed"))
+						state = "\"failed\"";
+					else if (id == g_conv_cur)
+						state = std::to_string(g_conv_pct.load());
+					else
+					{
+						if (std::find(g_conv_queue.begin(), g_conv_queue.end(), id) == g_conv_queue.end())
+							g_conv_queue.push_back(id);
+						state = "\"wait\"";
+					}
+					j += (j.size() > 1 ? ",\"" : "\"") + JsonEscape(id) + "\":" + state;
+				}
+				g_conv_left = int(g_conv_queue.size()) + (g_conv_cur.empty() ? 0 : 1);
+			}
+			SendText(s, 200, "application/json", j + "}");
 		}
 		else if (method == "POST" && target == "/zip")
 		{
@@ -775,6 +842,100 @@ std::string LanAddress()
 	return ip == "0.0.0.0" ? "" : ip;
 }
 
+// /data/captures/mp4/<game>/<nnn>/<name>.mp4 for "video/<game>/<nnn>/<name>.webm" (made or not)
+std::string Mp4Target(const std::string& id)
+{
+	return "/data/captures/mp4/" + id.substr(6, id.size() - 11) + ".mp4";
+}
+
+bool Exists(const std::string& p)
+{
+	struct stat st;
+	return stat(p.c_str(), &st) == 0;
+}
+
+// Makes the WebM clips the phone saves into MP4s (POST /api/prep), while the app is open.
+void* Converter(void*)
+{
+	// a clip that took the helper down last time (the marker names it) is not tried again: no crash loop
+	const std::string marker = "/data/captures/mp4/.converting";
+	if (FILE* f = fopen(marker.c_str(), "r"))
+	{
+		char id[512] = "";
+		if (fgets(id, sizeof(id), f))
+		{
+			id[strcspn(id, "\r\n")] = 0;
+			if (SafeId(id) && Ext(id, {".webm"}))
+			{
+				if (FILE* x = fopen((Mp4Target(id) + ".failed").c_str(), "w"))
+				{
+					fprintf(x, "the helper stopped while converting it\n");
+					fclose(x);
+				}
+				unlink((Mp4Target(id) + ".part").c_str());
+				OrbisLog("[convert] %s took the helper down last time: skipped", id);
+			}
+		}
+		fclose(f);
+		unlink(marker.c_str());
+	}
+	for (;;)
+	{
+		std::string id;
+		{
+			std::lock_guard<std::mutex> lock(g_conv_lock);
+			if (g_conv_stop)
+				g_conv_queue.clear(); // (the app closed: what was asked for is forgotten)
+			else if (!g_conv_queue.empty())
+			{
+				id = g_conv_queue.front();
+				g_conv_queue.erase(g_conv_queue.begin());
+			}
+			g_conv_cur = id;
+			g_conv_pct = 0;
+			g_conv_left = int(g_conv_queue.size()) + (id.empty() ? 0 : 1);
+		}
+		if (id.empty())
+		{
+			usleep(200000);
+			continue;
+		}
+		const std::string out = Mp4Target(id), part = out + ".part";
+		OrbisMkdirs(out.substr(0, out.find_last_of('/')));
+		struct stat st = {};
+		stat(FilePath(id).c_str(), &st);
+		std::string err;
+		const time_t t0 = time(nullptr);
+		OrbisLog("[convert] %s (%lld MB, asked for by the phone)", id.c_str(), (long long)st.st_size >> 20);
+		if (FILE* f = fopen(marker.c_str(), "w"))
+		{
+			fprintf(f, "%s\n", id.c_str());
+			fclose(f);
+		}
+		if (ConvertToMp4(FilePath(id), part, &g_conv_pct, &g_conv_stop, &err) && rename(part.c_str(), out.c_str()) == 0)
+			OrbisLog("[convert] done in %lld s: %s", (long long)(time(nullptr) - t0), out.c_str());
+		else
+		{
+			unlink(part.c_str());
+			OrbisLog("[convert] %s: %s", id.c_str(), err.c_str());
+			if (!g_conv_stop)
+			{
+				// (not again: a marker with the reason; the phone gets the WebM)
+				if (FILE* f = fopen((out + ".failed").c_str(), "w"))
+				{
+					fprintf(f, "%s\n", err.c_str());
+					fclose(f);
+				}
+			}
+		}
+		unlink(marker.c_str());
+		std::lock_guard<std::mutex> lock(g_conv_lock);
+		g_conv_cur.clear();
+		g_conv_pct = 0;
+	}
+	return nullptr;
+}
+
 void* Control(void*)
 {
 	const int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -804,6 +965,7 @@ void* Control(void*)
 		g_sent = 0;
 		Scan();
 		const bool web = StartWeb();
+		g_conv_stop = false; // the converter takes the phone's requests while the app is open
 		int ticks = 0;
 		for (;;)
 		{
@@ -811,13 +973,15 @@ void* Control(void*)
 				Scan(); // every 10 s: new captures counted
 			char line[256];
 			const std::string ip = LanAddress();
-			const int n = snprintf(line, sizeof(line), "IP %s PORT %d PHOTOS %d VIDEOS %d SENT %u WEB %d\n",
-				ip.empty() ? "-" : ip.c_str(), kWebPort, g_photos.load(), g_videos.load(), g_sent.load(), web ? 1 : 0);
+			const int n = snprintf(line, sizeof(line), "IP %s PORT %d PHOTOS %d VIDEOS %d SENT %u WEB %d CONV %d %d\n",
+				ip.empty() ? "-" : ip.c_str(), kWebPort, g_photos.load(), g_videos.load(), g_sent.load(), web ? 1 : 0,
+				g_conv_left.load(), g_conv_pct.load());
 			if (!SendAll(c, line, size_t(n)))
 				break;
 			sleep(1);
 		}
 		close(c);
+		g_conv_stop = true; // (a conversion under way stops; it starts again next time)
 		StopWeb();
 		OrbisLog("[captures] the app closed");
 	}
@@ -830,5 +994,11 @@ void StartServer()
 	pthread_t t;
 	if (pthread_create(&t, nullptr, Control, nullptr) == 0)
 		pthread_detach(t);
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, 4 << 20);
+	if (pthread_create(&t, &attr, Converter, nullptr) == 0)
+		pthread_detach(t);
+	pthread_attr_destroy(&attr);
 }
 } // namespace captures

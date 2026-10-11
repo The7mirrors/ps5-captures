@@ -69,6 +69,7 @@ main{padding:6px 10px 110px}
 <div class="foot">
   <div class="grow" id="status">Tap a picture to open it</div>
   <button class="btn" id="selbtn">Select</button>
+  <button class="btn" id="zipbtn" style="display:none" disabled>ZIP</button>
   <button class="btn main" id="dlbtn" style="display:none" disabled>Download</button>
 </div>
 <form id="zip" method="post" action="/zip" style="display:none"><input type="hidden" name="ids" id="zipids"></form>
@@ -79,13 +80,13 @@ main{padding:6px 10px 110px}
   <div class="vbar">
     <button class="btn" id="prev">&#8249;</button>
     <div class="grow" id="vname"></div>
-    <a class="btn main" id="save" href="#">Save</a>
+    <button class="btn main" id="save">Save</button>
     <button class="btn" id="next">&#8250;</button>
     <button class="btn" id="close">&#10005;</button>
   </div>
 </div>
 <script>
-let items=[],games={},kind="all",game="",shown=[],cur=-1,selecting=false,picked=new Set();
+let items=[],games={},kind="all",game="",shown=[],cur=-1,selecting=false,picked=new Set(),busy=false;
 const $=s=>document.querySelector(s);
 const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
 function day(m){const d=new Date(m*1000);return d.toLocaleDateString(undefined,{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
@@ -115,7 +116,7 @@ function draw(){
 function toggle(it,c){picked.has(it.id)?picked.delete(it.id):picked.add(it.id);c.classList.toggle("picked");upd()}
 function upd(){
   let s=0;items.forEach(i=>{if(picked.has(i.id))s+=i.s});
-  $("#dlbtn").disabled=!picked.size;$("#dlbtn").textContent=picked.size?"Download "+picked.size:"Download";
+  $("#dlbtn").disabled=$("#zipbtn").disabled=!picked.size||busy;$("#dlbtn").textContent=picked.size?"Download "+picked.size:"Download";
   $("#status").textContent=selecting?(picked.size?picked.size+" picked · "+size(s):"Tap pictures to pick them"):"Tap a picture to open it";
 }
 function open(i){
@@ -123,11 +124,37 @@ function open(i){
   if(it.t=="v"){const v=document.createElement("video");v.src="/f/"+enc(it.id);v.controls=true;v.playsInline=true;v.autoplay=true;st.appendChild(v)}
   else{const im=document.createElement("img");im.src="/f/"+enc(it.id);st.appendChild(im)}
   $("#vname").textContent=(games[it.g]||it.g)+" · "+time(it.m)+" · "+size(it.s);
-  $("#save").href="/f/"+enc(it.id)+"?dl=1";
-  $("#tip").textContent=ios?(it.t=="v"?"Save, then in the download open it and tap Share → Save Video.":"Tip: press and hold the picture → Save to Photos."):"";
+  $("#tip").textContent=tip(it);
   $("#view").classList.add("open");
 }
-function closeView(){$("#view").classList.remove("open");$("#stage").innerHTML=""}
+function tip(it){return ios?(it.t=="v"?"Save, then open it in Downloads (Files) and tap Share → Save Video.":"Press and hold the picture → Save to Photos."):""}
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// the WebM videos among them made into MP4s on the PS5 first (phones' galleries take MP4): only the ones saved
+async function prep(ids,show){
+  let vids=ids.filter(id=>/\.webm$/i.test(id));
+  while(vids.length){
+    let j;try{j=await (await fetch("/api/prep",{method:"POST",body:vids.join("\n"),cache:"no-store"})).json()}catch(e){return}
+    vids=vids.filter(id=>j[id]!="ready"&&j[id]!="failed"&&j[id]!==undefined);
+    if(!vids.length)return;
+    const pct=vids.map(id=>j[id]).find(v=>typeof v=="number");
+    show("Making "+(vids.length>1?vids.length+" videos":"the video")+" into MP4 on the PS5"+(pct!==undefined?" · "+pct+"%":"")+"...");
+    await wait(1000);
+  }
+}
+function save(id){const a=document.createElement("a");a.href="/f/"+enc(id)+"?dl=1";a.download="";document.body.appendChild(a);a.click();a.remove()}
+async function saveAll(ids,show){
+  busy=true;upd();
+  try{await prep(ids,show);
+    for(let i=0;i<ids.length;i++){show("Saving "+(i+1)+" of "+ids.length+"...");save(ids[i]);await wait(ids.length>1?1500:300)}
+  }finally{busy=false;upd()}
+}
+$("#save").onclick=async()=>{
+  if(busy)return;const it=shown[cur];$("#save").disabled=true;
+  await saveAll([it.id],t=>$("#tip").textContent=t);
+  $("#save").disabled=false;$("#tip").textContent=tip(it);
+};
+function closeView(){
+$("#view").classList.remove("open");$("#stage").innerHTML=""}
 $("#close").onclick=closeView;
 $("#prev").onclick=()=>{if(cur>0)open(cur-1)};
 $("#next").onclick=()=>{if(cur<shown.length-1)open(cur+1)};
@@ -146,8 +173,18 @@ $("#gamebtn").onclick=()=>{
   $("#picker").classList.add("open");
 };
 $("#pclose").onclick=()=>$("#picker").classList.remove("open");
-$("#selbtn").onclick=()=>{selecting=!selecting;document.body.classList.toggle("sel",selecting);$("#selbtn").textContent=selecting?"Cancel":"Select";$("#dlbtn").style.display=selecting?"":"none";if(!selecting){picked.clear();draw()}upd()};
-$("#dlbtn").onclick=()=>{if(picked.size==1){const id=[...picked][0];location.href="/f/"+enc(id)+"?dl=1";return}$("#zipids").value=[...picked].join("\n");$("#zip").submit()};
+$("#selbtn").onclick=()=>{selecting=!selecting;document.body.classList.toggle("sel",selecting);$("#selbtn").textContent=selecting?"Cancel":"Select";$("#dlbtn").style.display=$("#zipbtn").style.display=selecting?"":"none";if(!selecting){picked.clear();draw()}upd()};
+// one file each (a phone's gallery picks up separate files, not what is inside a ZIP); the ZIP for a computer
+$("#dlbtn").onclick=async()=>{
+  if(busy)return;const ids=items.filter(i=>picked.has(i.id)).map(i=>i.id);
+  await saveAll(ids,t=>$("#status").textContent=t);
+  $("#status").textContent=ios?"Saved to Downloads (Files)":"Saved: they are in your Downloads";
+};
+$("#zipbtn").onclick=async()=>{
+  if(busy)return;const ids=items.filter(i=>picked.has(i.id)).map(i=>i.id);
+  busy=true;upd();try{await prep(ids,t=>$("#status").textContent=t)}finally{busy=false;upd()}
+  $("#zipids").value=ids.join("\n");$("#zip").submit();
+};
 load();setInterval(()=>{if(!$("#view").classList.contains("open")&&!selecting)load()},15000);
 </script>
 </body></html>

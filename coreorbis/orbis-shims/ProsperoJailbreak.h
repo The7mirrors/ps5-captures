@@ -23,7 +23,7 @@ namespace jailbreak
 // Win98's helper (GENPLUS_HELPER_PORT on the host). Up to 1.4 the helper listened on 9077; 1.5's,
 // which also downloads the covers, listens on 9088, so an older helper still running (until the console restarts)
 // is left alone and the app starts its own.
-constexpr int kHelperPort = 9092; // Captures (WHEN98 uses 9088)
+constexpr int kHelperPort = 9094; // Captures 1.2 (1.0-1.1: 9092 - a running old helper doesn't block it; WHEN98 uses 9088)
 // the ELF loader the helper is sent to when it isn't running (GENPLUS_ELFLDR_PORT on the host)
 constexpr int kElfLoaderPort = 9021;
 
