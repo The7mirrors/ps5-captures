@@ -36,7 +36,7 @@ console to any phone or computer on the same network:
 
 ## Install
 
-1. Download **`CapturesPS5-v1.0.zip`** from the [Releases](../../releases) page and unzip it to get
+1. Download **`CapturesPS5-v1.1.zip`** from the [Releases](../../releases) page and unzip it to get
    **`CapturesPS5.elf`**.
 2. Send it with your payload loader (Payload Manager, `elfldr`, ...).
    It installs the app to `/data/homebrew/PPSA99233` and stays running as the app's helper.
@@ -54,6 +54,19 @@ ELF loader (`elfldr`, port 9021) by itself.
 
 **iPhone tip:** press and hold a picture and choose *Save to Photos*. Downloaded videos land in the Files app, from
 where *Share -> Save Video* puts them in Photos.
+
+**Videos that won't save (WebM):** clips recorded while some homebrew apps run are WebM files, which many phone
+galleries refuse. Downloads are sent as plain files (not as a video to play), so the phone saves them instead of
+opening a player. To get a gallery-friendly copy, convert the clip to MP4 on a PC (for example
+`ffmpeg -i clip.webm -c:v libx264 -crf 18 -c:a aac clip.mp4`) and put it on the PS5 as
+`/data/captures/mp4/<game id>/<folder>/<clip name>.mp4` (the same game id, folder and name as the WebM in
+`/user/av_contents/video/NPXS40087/`). Captures then plays and saves that MP4 in place of the WebM.
+
+## What's new
+
+- **1.1** - downloads are sent as files, so phones save videos instead of opening them in a player; WebM clips are
+  served as their MP4 copy when one is placed in `/data/captures/mp4/`.
+- **1.0** - first release.
 
 ## Build from source
 

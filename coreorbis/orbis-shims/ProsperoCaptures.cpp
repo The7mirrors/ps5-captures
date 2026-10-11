@@ -81,6 +81,17 @@ std::string FilePath(const std::string& id)
 	return std::string(kRoot) + "/" + id.substr(0, s) + "/NPXS40087" + id.substr(s);
 }
 
+// A WebM clip made into an MP4 (on a PC: phones' galleries take MP4, not WebM): /data/captures/mp4/<game>/<nnn>/<name>.mp4,
+// or "" if there is none. "video/PPSA99232/0f4/x.webm" -> /data/captures/mp4/PPSA99232/0f4/x.mp4
+std::string Mp4Path(const std::string& id)
+{
+	if (id.size() < 12 || id.compare(0, 6, "video/") != 0 || id.compare(id.size() - 5, 5, ".webm") != 0)
+		return "";
+	const std::string p = "/data/captures/mp4/" + id.substr(6, id.size() - 11) + ".mp4";
+	struct stat st;
+	return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode) ? p : "";
+}
+
 std::string ThumbPath(const std::string& id)
 {
 	const size_t s = id.find('/');
@@ -380,8 +391,8 @@ void SendFile(int s, const std::string& path, const std::string& range, bool dow
 	}
 	char head[1024];
 	int n = snprintf(head, sizeof(head), "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %lld\r\nAccept-Ranges: bytes\r\n"
-		"Cache-Control: max-age=3600\r\nConnection: close\r\n", partial ? "206 Partial Content" : "200 OK", Mime(path),
-		to - from + 1);
+		"Cache-Control: max-age=3600\r\nConnection: close\r\n", partial ? "206 Partial Content" : "200 OK",
+		download ? "application/octet-stream" : Mime(path), to - from + 1); // (a download: a file, not a video to play)
 	if (partial)
 		n += snprintf(head + n, sizeof(head) - size_t(n), "Content-Range: bytes %lld-%lld/%lld\r\n", from, to, size);
 	if (download)
@@ -625,7 +636,14 @@ void* Client(void* arg)
 				SendFile(s, stat(thumb.c_str(), &st) == 0 ? thumb : FilePath(id), "", false, "");
 			}
 			else
-				SendFile(s, FilePath(id), range, query.find("dl=1") != std::string::npos, NiceName(id));
+			{
+				// its MP4 if one was made of it (WebM), else the file itself
+				const std::string mp4 = Mp4Path(id);
+				std::string nice = NiceName(id);
+				if (!mp4.empty() && nice.size() > 5)
+					nice = nice.substr(0, nice.size() - 5) + ".mp4";
+				SendFile(s, mp4.empty() ? FilePath(id) : mp4, range, query.find("dl=1") != std::string::npos, nice);
+			}
 		}
 		else if (method == "GET" && target.rfind("/icon/", 0) == 0)
 		{

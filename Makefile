@@ -12,7 +12,7 @@
 #   3. build/ps5/CapturesPS5.elf         the installer + helper, with the app folder from step 2 inside
 
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
-VERSION ?= 1.0
+VERSION ?= 1.1
 TITLE_ID ?= PPSA99233
 APP_OUT := build/app/$(TITLE_ID)
 
