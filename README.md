@@ -15,6 +15,7 @@ console to any phone or computer on the same network:
 
 - **Scan and go** - the TV shows a big QR code; point your phone's camera at it and the gallery opens in the browser.
 - **A real gallery** - every screenshot and video, newest first, grouped by day, with the console's own thumbnails.
+  Clips you edited on the PS5 are there too, with the thumbnail you picked in the editor.
 - **Pick a game** - a picker with each game's icon, name and number of captures (PS5 and PS4 titles).
 - **View and play** - full-screen pictures, videos play right in the browser (with seeking), swipe between them.
 - **Save one or many** - save a single file, or select several and save them one by one (or as one `.zip`).
@@ -38,7 +39,7 @@ console to any phone or computer on the same network:
 
 ## Install
 
-1. Download **`CapturesPS5-v1.2.zip`** from the [Releases](../../releases) page and unzip it to get
+1. Download **`CapturesPS5-v1.3.zip`** from the [Releases](../../releases) page and unzip it to get
    **`CapturesPS5.elf`**.
 2. Send it with your payload loader (Payload Manager, `elfldr`, ...).
    It installs the app to `/data/homebrew/PPSA99233` and stays running as the app's helper.
@@ -64,6 +65,8 @@ save one, the PS5 first makes an MP4 of it (the page shows the progress; usually
 
 ## What's new
 
+- **1.3** - videos edited on the PS5 (`_QkVidEdt`) and exported ones (`_ContExpt`) are shown with the rest, under
+  their game, using the thumbnail picked in the editor ([#1](../../issues/1)).
 - **1.2** - WebM clips are made into MP4 on the PS5 when you save them (FFmpeg + x264 in the helper), with the
   progress on the phone and the TV; the `.zip` carries the MP4s; several picked files save one by one, so phones keep
   them as normal files; the "files sent" counter is gone.

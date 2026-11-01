@@ -7,8 +7,9 @@
 //   POST /api/prep     <id>\n<id>... -> the WebM videos among them queued to be made into MP4s, how each stands
 //   POST /zip          ids=<id>%0A<id>... -> one .zip of them, stored (no compression; files under 4 GB in all)
 //
-// An id is always "photo|video/<title id>/<folder>/<file>": letters, digits, '_', '-', '.', no "..": nothing outside
-// the capture folders can be asked for.
+// An id is "photo|video/<title id>/<folder>/<file>" for the console's captures (NPXS40087), or
+// "photo|video/_<source>/<path>" for the folders beside it (_QkVidEdt: videos edited on the console, _ContExpt: exported
+// ones; Captures 1.3): letters, digits, '_', '-', '.', no "..": nothing outside the capture folders can be asked for.
 //
 // SPDX-License-Identifier: MIT
 
@@ -73,21 +74,45 @@ bool SafeId(const std::string& id)
 	if (id.rfind("photo/", 0) != 0 && id.rfind("video/", 0) != 0)
 		return false;
 	int slashes = 0;
+	char prev = 0;
 	for (char c : id)
 	{
 		if (c == '/')
+		{
+			if (prev == '/')
+				return false;
 			slashes++;
+		}
 		else if (!(isalnum(uint8_t(c)) || c == '_' || c == '-' || c == '.'))
 			return false;
+		prev = c;
 	}
-	return slashes == 3;
+	return slashes >= 2 && slashes <= 7 && prev != '/';
+}
+
+// the folder under photo|video an id is in: "photo/PPSA99232/0f4/x.jpg" -> "photo/NPXS40087/PPSA99232/0f4/x.jpg",
+// "video/_QkVidEdt/..." -> as it is
+std::string AvPath(const std::string& id)
+{
+	const size_t s = id.find('/');
+	return id[s + 1] == '_' ? id : id.substr(0, s) + "/NPXS40087" + id.substr(s);
 }
 
 // "photo/PPSA99232/0f4/x.jpg" -> /user/av_contents/photo/NPXS40087/PPSA99232/0f4/x.jpg
 std::string FilePath(const std::string& id)
 {
-	const size_t s = id.find('/');
-	return std::string(kRoot) + "/" + id.substr(0, s) + "/NPXS40087" + id.substr(s);
+	return std::string(kRoot) + "/" + AvPath(id);
+}
+
+// The game an id belongs to: its title id folder; a file lying straight in a _<source> folder belongs to the source.
+std::string GameOf(const std::string& id)
+{
+	const size_t a = id.find('/'), b = id.find('/', a + 1);
+	const std::string first = id.substr(a + 1, b - a - 1);
+	if (first[0] != '_')
+		return first;
+	const size_t c = id.find('/', b + 1);
+	return c == std::string::npos ? first : id.substr(b + 1, c - b - 1);
 }
 
 // A WebM clip made into an MP4 (on a PC: phones' galleries take MP4, not WebM): /data/captures/mp4/<game>/<nnn>/<name>.mp4,
@@ -111,10 +136,12 @@ std::string SendPath(const std::string& id)
 std::string Mp4Target(const std::string& id);
 bool Exists(const std::string& p);
 
+// the console's thumbnail: <file>.jpg (a picture chosen in the editor, edited videos) before <file>.jpeg (its own)
 std::string ThumbPath(const std::string& id)
 {
-	const size_t s = id.find('/');
-	return std::string(kRoot) + "/thumbnails/" + id.substr(0, s) + "/NPXS40087" + id.substr(s) + ".jpeg";
+	const std::string base = std::string(kRoot) + "/thumbnails/" + AvPath(id);
+	struct stat st;
+	return stat((base + ".jpg").c_str(), &st) == 0 ? base + ".jpg" : base + ".jpeg";
 }
 
 bool Ext(const std::string& n, std::initializer_list<const char*> exts)
@@ -131,54 +158,62 @@ bool Ext(const std::string& n, std::initializer_list<const char*> exts)
 	return false;
 }
 
+// The captures in dir and the folders under it (a few levels), as ids "<prefix>/<path below dir>".
+void ScanDir(const std::string& dir, const std::string& prefix, bool video, int depth, std::vector<Item>& out)
+{
+	DIR* d = opendir(dir.c_str());
+	if (!d)
+		return;
+	while (struct dirent* e = readdir(d))
+	{
+		const std::string n = e->d_name;
+		if (n[0] == '.')
+			continue;
+		const std::string path = dir + "/" + n;
+		struct stat st;
+		if (stat(path.c_str(), &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode))
+		{
+			if (depth > 0)
+				ScanDir(path, prefix + "/" + n, video, depth - 1, out);
+			continue;
+		}
+		if (!S_ISREG(st.st_mode) || !(video ? Ext(n, {".mp4", ".webm"}) : Ext(n, {".jpg", ".jpeg", ".png", ".webp"})))
+			continue;
+		Item it;
+		it.id = prefix + "/" + n;
+		it.video = video;
+		it.size = st.st_size;
+		it.mtime = st.st_mtime;
+		if (SafeId(it.id))
+		{
+			it.game = GameOf(it.id);
+			out.push_back(it);
+		}
+	}
+	closedir(d);
+}
+
 std::vector<Item> Scan()
 {
 	std::vector<Item> out;
 	for (const char* kind : {"photo", "video"})
 	{
-		const std::string base = std::string(kRoot) + "/" + kind + "/NPXS40087";
-		DIR* games = opendir(base.c_str());
-		if (!games)
+		// NPXS40087: the console's captures, <title id>/<folder>/<file>; _QkVidEdt, _ContExpt...: edited and exported ones
+		const std::string base = std::string(kRoot) + "/" + kind;
+		DIR* sources = opendir(base.c_str());
+		if (!sources)
 			continue;
-		while (struct dirent* g = readdir(games))
+		while (struct dirent* src = readdir(sources))
 		{
-			if (g->d_name[0] == '.')
-				continue;
-			const std::string gdir = base + "/" + g->d_name;
-			DIR* subs = opendir(gdir.c_str());
-			if (!subs)
-				continue;
-			while (struct dirent* s = readdir(subs))
-			{
-				if (s->d_name[0] == '.')
-					continue;
-				const std::string sdir = gdir + "/" + s->d_name;
-				DIR* files = opendir(sdir.c_str());
-				if (!files)
-					continue;
-				while (struct dirent* f = readdir(files))
-				{
-					const std::string n = f->d_name;
-					const bool video = kind[0] == 'v';
-					if (!(video ? Ext(n, {".mp4", ".webm"}) : Ext(n, {".jpg", ".jpeg", ".png", ".webp"})))
-						continue;
-					struct stat st;
-					if (stat((sdir + "/" + n).c_str(), &st) != 0)
-						continue;
-					Item it;
-					it.id = std::string(kind) + "/" + g->d_name + "/" + s->d_name + "/" + n;
-					it.game = g->d_name;
-					it.video = video;
-					it.size = st.st_size;
-					it.mtime = st.st_mtime;
-					if (SafeId(it.id))
-						out.push_back(it);
-				}
-				closedir(files);
-			}
-			closedir(subs);
+			const std::string n = src->d_name;
+			if (n == "NPXS40087")
+				ScanDir(base + "/" + n, kind, kind[0] == 'v', 3, out);
+			else if (n[0] == '_')
+				ScanDir(base + "/" + n, std::string(kind) + "/" + n, kind[0] == 'v', 3, out);
 		}
-		closedir(games);
+		closedir(sources);
 	}
 	std::sort(out.begin(), out.end(), [](const Item& a, const Item& b) { return a.mtime > b.mtime; });
 	int p = 0, v = 0;
@@ -274,6 +309,13 @@ std::string GameName(const std::string& tid)
 	auto it = cache.find(tid);
 	if (it != cache.end())
 		return it->second;
+	// files straight in a source folder beside NPXS40087 (Captures 1.3)
+	if (tid == "_QkVidEdt")
+		return cache[tid] = "Edited videos";
+	if (tid == "_ContExpt")
+		return cache[tid] = "Exported";
+	if (tid[0] == '_')
+		return cache[tid] = tid.substr(1);
 	std::string name = tid.rfind("NPXS", 0) == 0 ? "PS5" : tid;
 	for (const std::string& p : {"/user/appmeta/" + tid + "/param.json", "/system_ex/app/" + tid + "/sce_sys/param.json"})
 		if (FILE* f = fopen(p.c_str(), "rb"))
@@ -363,8 +405,8 @@ const char* Mime(const std::string& n)
 // "Game name 2026-10-10 12-14-10.jpg" for a download
 std::string NiceName(const std::string& id)
 {
-	const size_t a = id.find('/'), b = id.find('/', a + 1), c = id.find_last_of('/');
-	std::string name = GameName(id.substr(a + 1, b - a - 1)) + " " + id.substr(c + 1);
+	const size_t c = id.find_last_of('/');
+	std::string name = GameName(GameOf(id)) + " " + id.substr(c + 1);
 	for (char& ch : name)
 		if (strchr("\\/:*?\"<>|", ch) || uint8_t(ch) < 0x20)
 			ch = '_';
